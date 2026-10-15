@@ -1,0 +1,6 @@
+resources:
+  - ../../base
+namespace: prod
+replicas:
+  - name: nginx
+    count: 3
