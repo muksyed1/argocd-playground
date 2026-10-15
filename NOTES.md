@@ -19,10 +19,11 @@ Running log of what I do, what I learn, and what breaks. Newest entries go at th
 - [x] `base/` app renders (`kubectl kustomize base`)
 - [x] `overlays/dev` renders (`kubectl kustomize overlays/dev`)
 - [ ] `overlays/prod` renders (`kubectl kustomize overlays/prod`)
-- [ ] Repo pushed to GitHub
-- [ ] Dev Application created: auto-sync, shows Synced and Healthy
+- [x] Repo pushed to GitHub
+- [x] Dev Application created: auto-sync, shows Synced and Healthy
 - [ ] Prod Application created: manual sync, OutOfSync until synced by hand
-- [ ] Change a replica count in git and watch ArgoCD pick it up
+- [x] Change a replica count in git and ArgoCD applies it (1 -> 2 and 2 -> 3 both applied, but I clicked Sync both times)
+- [ ] Prove auto-sync with no clicks: push a change, don't touch the UI, wait for the polling interval
 
 ## Command log
 
@@ -58,8 +59,29 @@ Commands I ran, with the date and what happened.
             so overlays/dev can reference ../../base
 2026-10-14  moved overlays/ to the repo root; kubectl kustomize overlays/dev
             -> same Deployment as base plus namespace: dev (kustomize only prints, it never touches the cluster)
+2026-10-14  git init -b main; git commit; git push -> github.com/muksyed1/argocd-playground (public), commit 6cbca54
+2026-10-14  wrote argocd/dev-app.yaml. Fixed in review: syncPolicy "options" is not a field; "automated" must be a map
+            (prune: true, selfHeal: true), not a list; syncOptions belongs inside syncPolicy as a list of strings
+2026-10-14  kubectl apply --dry-run=server -f argocd/dev-app.yaml -> "created (server dry run)"
+2026-10-14  kubectl apply -f argocd/dev-app.yaml; kubectl get application -n argocd
+            -> nginx-dev   Synced   Healthy
+            (note: kubectl get all -n argocd shows only ArgoCD's own pods; the app runs in -n dev)
+2026-10-14  kubectl get pods -n dev -> nginx-67fbcd88dd-x8zws 1/1 Running. UI (ArgoCD v3.5.5) shows nginx-dev Healthy + Synced,
+            path overlays/dev, destination in-cluster, namespace dev
+2026-10-14  learned: `kubectl get all` only covers a fixed category of built-in types. Not shown: Applications (CRD),
+            ConfigMaps, Secrets. Name the type: kubectl get applications,configmap,secret -n argocd
 2026-10-14  kubectl kustomize base
             -> renders the Deployment, image nginx:1.27.2, no errors
+2026-10-14  changed replicas 1 -> 2 in base/deployments.yaml; commit 4f2db06 pushed.
+            Nothing happened for several minutes. kubectl get application nginx-dev -n argocd -o jsonpath='{.status.sync.revision}'
+            showed b5a62e8 (one commit behind). Local render (kubectl kustomize overlays/dev | grep replicas) showed 2,
+            so git and overlay were fine; ArgoCD just hadn't polled yet. Synced manually in the UI -> 2 pods.
+2026-10-14  changed replicas to 3 (commit 9dbbd4d "Increased to 3 replicas"), pushed. ArgoCD showed 3 replicas within seconds.
+            CORRECTION: the app's Events tab shows "admin initiated sync to main (9dbbd4d)", so I had clicked Sync.
+            This was NOT a hands-off auto-sync test. Still to do: push a change and click nothing.
+2026-10-14  scale test: kubectl scale deployment nginx -n dev --replicas=1 -> reverted to 3 within seconds (selfHeal).
+            App Events tab: OutOfSync -> Synced. Deleting pods via the ArgoCD UI is recorded as "admin deleted resource /Pod ...";
+            sync status stayed Synced for those (the ReplicaSet recreated them, not ArgoCD).
 ```
 
 ## Concepts I'm learning
@@ -69,6 +91,13 @@ Commands I ran, with the date and what happened.
 - **Kustomize**: `base/` holds the shared manifests, `overlays/dev` and `overlays/prod` patch them per environment. Built into `kubectl`.
 - **CRD** (CustomResourceDefinition): teaches Kubernetes a new object type beyond the built-ins. Not in my 2020 CKA notes. A controller in the cluster watches those objects and acts on them. Inspect with `kubectl get crd` and `kubectl explain application.spec`.
 - **Application** (ArgoCD CRD): tells ArgoCD which repo, path, and cluster destination to sync. ArgoCD installs three CRDs: `applications`, `appprojects`, `applicationsets`.
+
+- **What ArgoCD controls**: only the objects written in git (here the `nginx` Deployment). The ReplicaSet and Pods are created by Kubernetes controllers from the Deployment, so they are not in git and ArgoCD doesn't manage them directly.
+- **Delete a pod vs. scale the Deployment** (tested in `dev`):
+  - Delete a pod: the Deployment still says 3, matching git, so the app stays Synced. The ReplicaSet creates a replacement. ArgoCD does nothing. Events show only `replicaset/... SuccessfulCreate`.
+  - `kubectl scale deployment nginx -n dev --replicas=1`: the Deployment now differs from git, so ArgoCD (selfHeal) sets it back to 3. Events show `deployment/nginx ScalingReplicaSet` 3 -> 1, then 1 -> 3.
+- **Events show what changed, not who**: `kubectl get events -n dev --sort-by=.lastTimestamp`. Identical repeated events are merged under the latest timestamp. To see ArgoCD's actions use the UI History tab or `kubectl logs -n argocd argocd-application-controller-0`.
+- **`kubectl logs nginx -n dev` fails** (pods "nginx" not found): `nginx` is the Deployment, pods are named `nginx-<hash>-<id>`. Use `kubectl logs deploy/nginx -n dev`, or run `kubectl get pods -n dev` for the exact name. Those are nginx's own logs, not a record of who replaced a pod.
 
 ## CKA notes vs. current Kubernetes
 
