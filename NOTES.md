@@ -171,6 +171,31 @@ I ran `helm apply --dry-run=server -f argocd/nginx-helm-prod-app.yaml` -> `Error
 
 **What I'd do differently:** Before deleting `_helpers.tpl`, run `grep -rn include charts/nginx/templates` to find templates that still depend on it.
 
+## OpenShift (Developer Sandbox)
+
+- Signed up at https://developers.redhat.com/developer-sandbox (first card, "OpenShift"). It first said "Your account needs manual approval", but the "ready to use" email arrived within minutes. Active for 30 days (ends around Nov 15, 2026), all data deleted at the end; Red Hat emails 3 days before. Log in at https://sandbox.redhat.com/. Calendar reminder set for Nov 14.
+- It is a shared Red Hat OpenShift Service on AWS (ROSA) cluster. My project is `muksyed-dev` (OpenShift's name for a namespace) with ResourceQuotas, and project-level access only (not cluster-admin).
+- No OpenShift GitOps (Argo CD) operator. Installed operators include Web Terminal, OpenShift Pipelines, Dev Spaces, Serverless, External Secrets, Ansible Automation Platform, OpenShift AI, Camel K, `gitops-primer` (Konveyor, not Argo CD). Software Catalog search "argocd" only found "RedHat Argo CD Agent - Agent Component", a Helm chart that connects managed clusters to a principal (hub-and-spoke), not the Argo CD server. For Argo CD on OpenShift the options are OpenShift Local (needs about 10.5 GB free RAM, I'd be admin) or OKD.
+- The `>_` icon in the console opens a Web Terminal with `oc` preinstalled. The terminal runs as a pod in my project (`workspace...`); don't delete it. `oc whoami` -> muksyed, `oc project` -> muksyed-dev.
+
+### OpenShift: stock nginx goes into CrashLoopBackOff
+
+**What broke:** `oc create deployment nginx --image=nginx:1.31.7` -> pod went `Error`, then `CrashLoopBackOff`, 0/1 ready.
+
+**How I found it:** `oc get pods`, then `oc logs deploy/nginx`: `[emerg] mkdir() "/var/cache/nginx/client_temp" failed (13: Permission denied)`, plus `[warn] the "user" directive makes sense only if the master process runs with super-user privileges, ignored` and `can not modify /etc/nginx/conf.d/default.conf (read-only file system?)`. OpenShift runs containers as a random non-root user, and stock nginx wants root-owned directories and port 80.
+
+**What fixed it:** `oc set image deployment/nginx nginx=nginxinc/nginx-unprivileged:1.31.7` (checked the tag first with `docker manifest inspect`). The unprivileged image runs as any user and listens on port 8080. The change created a new ReplicaSet and rolled out; the pod went `1/1 Running`.
+
+**What I'd do differently:** On OpenShift, start with an image built for non-root (`nginxinc/nginx-unprivileged`) and expect port 8080. Also, `oc set image` is an imperative change that git doesn't know about; with ArgoCD self-heal it would be reverted, so the GitOps way is to change the image in the manifest and push.
+
+### OpenShift: exposing nginx with a Service and a Route
+
+- `oc expose deployment nginx --port=8080` creates a Service in front of the pods (8080 is the port `nginx-unprivileged` listens on).
+- `oc expose service nginx` creates a Route from that Service; `oc get route` shows the hostname. A Route is OpenShift's way to publish a service on a public hostname, where plain Kubernetes would use an Ingress.
+- Opened the hostname with `http://` in the browser and the "Welcome to nginx!" page loaded.
+- Short names: `rc` = ReplicationController (the older predecessor of ReplicaSet; OpenShift's deprecated DeploymentConfig used them). `oc api-resources` lists the short names.
+- `oc set image deployment/nginx nginx=<image>` is imperative: it edits the live Deployment, so git doesn't know about it, and ArgoCD self-heal would revert it. The GitOps way is to change the image in the manifest and push.
+
 ## Memory
 
 - RAM hit 85-86% on the laptop. Early on the main user was Firefox (about 10 GB). Later the top process was Docker at 6.4 GB, even though `docker stats --no-stream` showed the kind container using only 1.64 GiB: the Docker Desktop VM holds extra memory as cache.
