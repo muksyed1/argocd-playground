@@ -27,6 +27,9 @@ Running log of what I do, what I learn, and what breaks. Newest entries go at th
 - [x] Helm: scaffold `charts/nginx`, trim it, `helm lint` and `helm template` pass (lint passes; confirm the render output)
 - [x] Helm: `argocd/nginx-helm-dev-app.yaml` deployed to `helm-dev`, shows Synced and Healthy
 - [x] Helm: change a value in git and watch ArgoCD apply it (replicaCount 2 -> 3 in values.yaml, 3 pods in helm-dev)
+- [x] Helm prod: `charts/nginx/values-prod.yaml` and `argocd/nginx-helm-prod-app.yaml` (no `automated`, `helm.valueFiles: values-prod.yaml`, namespace helm-prod) applied; shows OutOfSync
+- [x] Helm prod: synced by hand, 3 pods Running in `helm-prod` (all four Applications Synced + Healthy)
+- [ ] Helm prod: trim `values-prod.yaml` down to only what differs (`replicaCount: 3`), push, confirm the app stays Synced
 
 ## Command log
 
@@ -141,6 +144,22 @@ Goal: deploy nginx a second way, with a Helm chart, as its own ArgoCD Applicatio
 - Wrote `argocd/nginx-helm-dev-app.yaml`. Review caught `metadata.name: nginx-dev`, a clash with the existing Kustomize Application (same name + namespace), which would have overwritten it and, with `prune: true`, could have deleted its pods. Renamed to `nginx-helm-dev`. A server dry run says `configured` for an existing name and `created` for a new one.
 - Pushing doesn't create an Application. ArgoCD only watches paths that existing Applications point to, so each new Application is applied once with `kubectl apply -f`.
 - `kubectl apply -f argocd/nginx-helm-dev-app.yaml` -> `nginx-helm-dev created`. Within seconds: three Applications (`nginx-dev`, `nginx-helm-dev`, `nginx-prod`) all Synced + Healthy; 2 pods Running in `helm-dev`. The ReplicaSet hash (`nginx-76d8bcb44`) matches the Kustomize pods because the pod template is identical.
+
+### Helm prod Application: values-prod.yaml not found
+
+**What broke:** `nginx-helm-prod` showed `Failed to load target state ... helm template . --name-template nginx-helm-prod --namespace helm-prod ... --values <path>/charts/nginx/values-prod.yaml ... Error: open .../values-prod.yaml: no such file or directory`.
+
+**How I found it:** `git status` showed `argocd/nginx-helm-prod-app.yaml` and `charts/nginx/values-prod.yaml` as untracked. The file existed on my laptop (`ls` found it), but ArgoCD reads the GitHub copy, which didn't have it yet. The error message also prints the exact command ArgoCD runs: `helm template` with `--name-template` (the Application name), `--namespace` (the destination namespace) and `--values` (valueFiles, resolved relative to `source.path`).
+
+**What fixed it:** Committed and pushed (adac27d), confirmed with `git ls-files charts/nginx`, then Refresh (Hard Refresh if needed) on the app. The error cleared and the app went OutOfSync, which is right for a manual-sync app.
+
+**What I'd do differently:** Push before applying a new Application, and check `git ls-files` rather than `ls` (a file existing locally doesn't mean it's in the repo).
+
+Also noticed: `values-prod.yaml` was a full copy of `values.yaml` (5,277 bytes). It should hold only the settings that differ (`replicaCount: 3`), or it silently pins every other value and prod stops following changes to `values.yaml`.
+
+### Helm: `helm apply` doesn't exist
+
+I ran `helm apply --dry-run=server -f argocd/nginx-helm-prod-app.yaml` -> `Error: unknown command "apply" for "helm"`. `apply` is a kubectl command, and the Application is a Kubernetes object (from the CRD), so use `kubectl apply`. Helm only lints and renders charts here; ArgoCD does the deploying.
 
 ### Helm: `helm lint` failed on NOTES.txt
 
