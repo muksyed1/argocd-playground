@@ -310,6 +310,16 @@ spec:
 
 **Trial dates:** the 60-day AAP trial ends 2026-12-14 (the Add Subscriptions page showed 2026-12-15; probably a time zone difference). Calendar reminder: Dec 13. The OpenShift Developer Sandbox ends around Nov 15 (reminder Nov 14).
 
+### AAP: first job "succeeded" but ran nothing
+
+**What broke:** Launching the built-in **Demo Job Template** ended with status **Success**, but the output said `[WARNING]: provided hosts list is empty, only localhost is available. Note that the implicit localhost does not match 'all'`, then `PLAY [Hello World Sample]` and `skipping: no hosts matched`. No tasks ran.
+
+**How I found it:** I read the job output instead of trusting the green status. The Overview page had shown 0 hosts and 0 inventories, and the playbook targets `hosts: all`.
+
+**What fixed it:** Created an inventory `local-inv` with a host `localhost` and the variable `ansible_connection: local` (the job runs inside an execution environment pod on OpenShift, so `localhost` is that pod), set the Demo Job Template's inventory to it, and relaunched. The play recap showed `localhost : ok=2 changed=0 unreachable=0 failed=0` with "Gathering Facts" and "Hello Message" (`Hello World!`).
+
+**What I'd do differently:** A green Success in AAP only means Ansible exited cleanly. Always read the play recap and check that hosts matched.
+
 **Next for AAP**
 1. (done) Finish the subscription wizard.
 2. Create a small playbook repo on GitHub (e.g. `aap-practice`): `hello.yml`, optional `inventory/hosts.yml` with `localhost` and `ansible_connection: local`.
