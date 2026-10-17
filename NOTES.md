@@ -196,6 +196,15 @@ I ran `helm apply --dry-run=server -f argocd/nginx-helm-prod-app.yaml` -> `Error
 - Short names: `rc` = ReplicationController (the older predecessor of ReplicaSet; OpenShift's deprecated DeploymentConfig used them). `oc api-resources` lists the short names.
 - `oc set image deployment/nginx nginx=<image>` is imperative: it edits the live Deployment, so git doesn't know about it, and ArgoCD self-heal would revert it. The GitOps way is to change the image in the manifest and push.
 
+### OpenShift: from imperative commands to manifests in git
+
+- The first files I saved in the web terminal (`~/openshift`) were `oc get ... -o yaml` dumps: `kind: List`, `uid`, `resourceVersion`, `creationTimestamp`, `status`, `namespace`, `host`. Not usable as manifests. My `service.yaml` dump even showed the wrong Service: `modelmesh-serving`, which the Sandbox's ModelMesh controller creates in my project (it was the "1 Service" on the project page). Don't touch it; name my own objects when deleting (`oc delete route,svc,deployment nginx`, never `--all`).
+- `oc get` has no `--dry-run` (only commands that create or change things do).
+- Wrote clean manifests by hand in `openshift/` in this repo: `deployment.yaml` (nginx-unprivileged:1.31.7), `service.yaml` (8080 -> 8080, selector `app: nginx`), `route.yaml` (`route.openshift.io/v1`, `to` Service `nginx`, `targetPort: 8080`; no namespace, no host, no status). Review caught: the Route was still a `kind: List` wrapper with `uid`/`resourceVersion`; a mis-indented `metadata:`; leftover `kind: List` at the bottom; `kind: Route` deleted by mistake.
+- `oc apply` straight from GitHub (public repo, no login, a one-time fetch): `oc apply -f https://raw.githubusercontent.com/muksyed1/argocd-playground/main/openshift/<file>.yaml`. It is not GitOps: nothing watches the repo, so edits only take effect when I run `oc apply` again.
+- Ran `oc delete route,svc,deployment nginx`, then applied the three files: each printed `created`. Deployment 1/1, Service `nginx` ClusterIP on 8080, Route admitted with the same generated hostname as before (OpenShift builds it from route name + project).
+- Container-name caution: the manifest names the container `nginx-unprivileged`, but the imperative Deployment's container was `nginx`. Applying over an existing Deployment merges containers by name (could leave two), so I deleted the old objects first.
+
 ## Memory
 
 - RAM hit 85-86% on the laptop. Early on the main user was Firefox (about 10 GB). Later the top process was Docker at 6.4 GB, even though `docker stats --no-stream` showed the kind container using only 1.64 GiB: the Docker Desktop VM holds extra memory as cache.
