@@ -229,6 +229,82 @@ I ran `helm apply --dry-run=server -f argocd/nginx-helm-prod-app.yaml` -> `Error
 - `oc get namespace muksyed-dev` (by name) works and shows `Active`, even though listing all namespaces is Forbidden: RBAC separates the `get` verb on one named object from `list` across the cluster. Same namespace as the project `muksyed-dev`.
 - Typing `oc get` with nothing after it just prints help.
 
+## Ansible Automation Platform (AAP) on the OpenShift Sandbox
+
+**Why:** a recruiter's Ansible Automation Engineer / AAP contract role. I have many years of Ansible and AWX (Git-based projects, templates, inventories) but have not built or administered AAP. I need a refresh.
+
+**Setup facts**
+- The AAP operator (Red Hat Ansible Automation Platform 2.7) is already installed on the Sandbox; as a project-level user I can create an instance in `muksyed-dev` from Ecosystem > Software Catalog (or Installed Operators > Red Hat Ansible Automation Platform > the "Ansible Automation Platform" card > Create). The operator's "Provided APIs" page also lists Controller Project, Inventory, Credential, Job Template, Workflow Template, Schedule, Job and Instance Group: Controller objects can be declared as Kubernetes custom resources, so AAP configuration could live in git and be applied by Argo CD (inferred from the card descriptions, not tried).
+- Project limits I hit: ResourceQuotas `compute-deploy` (requests.cpu 3, requests.memory 30Gi, limits.cpu 30, limits.memory 30Gi), `storage` (10 PVCs, 80Gi), `compute-build`, and GPUs 0/0 (no GPU workloads on the Sandbox). A LimitRange `resource-limits` gives every container without its own limits a limit of cpu 1 and memory 1000Mi, and requests of cpu 10m and memory 64Mi.
+- Listing cluster-scoped things (`oc get namespaces`, `oc get datasciencecluster`, the AnsibleAutomationPlatforms list across all namespaces) is Forbidden at the cluster scope. Use "Current namespace only" in the console, or `-n muksyed-dev` on the CLI.
+
+### AAP: the gateway could not start (quota exceeded)
+
+**What broke:** The first instance (all defaults) stalled with only PostgreSQL and Redis running. `oc get ansibleautomationplatform muksyed-aap-test -o jsonpath=...` showed `Failure=True Failed unknown playbook failure` (the operator is Ansible-based, so this was its own task failing).
+
+**How I found it:** `oc get events --sort-by=.lastTimestamp | tail -20` showed `FailedCreate` on the gateway ReplicaSet: `exceeded quota: compute-deploy, requested: limits.cpu=257, used: limits.cpu=2800m, limited: limits.cpu=30`. `oc get deployment muksyed-aap-test-gateway -o jsonpath=...` showed the `proxy` container has a CPU limit of `256` by default, and the `api` container got the LimitRange default of 1: 256 + 1 = 257. Because the pod was refused, there was no gateway pod at all; the error was on the ReplicaSet, not a pod.
+
+**What fixed it:** Set `spec.proxy.resource_requirements.limits.cpu: "1"` on the instance (first with `oc patch ... --type merge`, later in the YAML before creating). `oc explain ansibleautomationplatform.spec` found the field names (`proxy`, `api`, `hub`, `eda`, `controller`, `idle_aap`, ...). Also set `hub.disabled: true` and `eda.disabled: true` (no Hub or EDA pods appeared) so the platform fits the quota.
+
+**What I'd do differently:** Before creating an operator-backed instance in a quota-limited project, read its default resource limits in the YAML view and compare with `oc describe quota`. When pods are missing, look at the events on the ReplicaSet.
+
+### AAP: controller-web OOMKilled
+
+**What broke:** `controller-web` showed `2/3 OOMKilled`, then `CrashLoopBackOff`, with `controller-task` stuck in `Init:0/2`.
+
+**How I found it:** `oc get pods` and `oc get events`. The Controller containers had no limits of their own, so the LimitRange default of 1000Mi memory applied, which is likely too small for the Controller web container (my explanation; I did not read the container's exact limit).
+
+**What fixed it:** Deleted the instance by name (`oc delete ansibleautomationplatform muksyed-aap-test`), deleted its leftover PVC by name (`oc delete pvc postgres-15-muksyed-aap-test-postgres-15-0`; PVCs are not removed with the instance), and recreated it from the YAML view with explicit limits: `controller.web_resource_requirements.limits.memory: 3Gi`, `task_resource_requirements` 3Gi, `ee_resource_requirements` 2Gi (field names from `oc explain automationcontroller.spec | grep -i resource`; `oc explain ...spec.controller` showed no sub-fields). The memory values were my guesses. This time `controller-web` reached `3/3 Running`.
+
+**What I'd do differently:** Set explicit resource limits for every component in the instance YAML from the start, and keep that YAML in the repo.
+
+### AAP: waiting for migrations (normal)
+
+- After `controller-web` was running, `controller-task` sat in `Init:0/2`. `oc logs <task pod> -c init-database` showed `[wait-for-migrations] Waiting for database migrations...` with retries backing off up to 30 seconds, while `oc logs job/muksyed-aap-test-controller-migration-4.8.11` showed Django migrations being applied one by one. It was waiting, not stuck. The first run took several minutes.
+
+**Working `spec` for the instance** (saved here because the real YAML should go in `openshift/aap/`)
+```yaml
+apiVersion: aap.ansible.com/v1alpha1
+kind: AnsibleAutomationPlatform
+metadata:
+  name: muksyed-aap-test
+spec:
+  proxy:
+    resource_requirements:
+      limits:
+        cpu: "1"
+  hub:
+    disabled: true
+  eda:
+    disabled: true
+  controller:
+    web_resource_requirements:
+      limits:
+        memory: 3Gi
+    task_resource_requirements:
+      limits:
+        memory: 3Gi
+    ee_resource_requirements:
+      limits:
+        memory: 2Gi
+```
+
+**Logging in**
+- The Route (`https://`) shows the AAP login page. Username `admin`; the password is in the secret `<instance>-admin-password` (`oc get secret | grep -i admin`, then `oc get secret <name> -o jsonpath='{.data.password}' | base64 -d; echo`). Don't paste or save it. The browser's autofill put my email in the username field by mistake.
+- Before the Controller was up, the UI showed `HTTP 503: Error connecting to Controller API` and had no Automation Execution menu.
+- After the Controller started, the UI showed the first-run subscription wizard: attach a subscription by manifest, service account, username/password or Satellite, accept the EULA, then review. A trial subscription link is on the page. Plan: use a service account (revocable) rather than my Red Hat password. Not done yet.
+
+### Sandbox idling
+
+- My `nginx` Deployment came back as `0/0` after sitting idle (`oc get deployment`). I believe the Sandbox scales idle workloads to zero (not confirmed). `oc scale deployment nginx --replicas=2`, or re-applying `openshift/deployment.yaml`, brought it back.
+
+**Next for AAP**
+1. Finish the subscription wizard.
+2. Create a small playbook repo on GitHub (e.g. `aap-practice`): `hello.yml`, optional `inventory/hosts.yml` with `localhost` and `ansible_connection: local`.
+3. In AAP: Organization/Team, Project from the repo, Inventory, Job Template, Workflow, Schedule, Survey, RBAC for a team.
+4. Gaps for the role: a custom Python module/plugin, an `ansible-lint` GitHub Actions workflow, a dynamic inventory (`aws_ec2`) in the Switchyard repo.
+5. Put the instance YAML in `openshift/aap/` and apply it with `oc apply`.
+
 ## Memory
 
 - RAM hit 85-86% on the laptop. Early on the main user was Firefox (about 10 GB). Later the top process was Docker at 6.4 GB, even though `docker stats --no-stream` showed the kind container using only 1.64 GiB: the Docker Desktop VM holds extra memory as cache.
