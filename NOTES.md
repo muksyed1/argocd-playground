@@ -298,8 +298,20 @@ spec:
 
 - My `nginx` Deployment came back as `0/0` after sitting idle (`oc get deployment`). I believe the Sandbox scales idle workloads to zero (not confirmed). `oc scale deployment nginx --replicas=2`, or re-applying `openshift/deployment.yaml`, brought it back.
 
+### AAP: subscription wizard failed with a service account, worked with a manifest
+
+**What broke:** The first-run wizard's **Service Account** method (client ID and secret for a service account `muksyed-aap-svc` created on console.redhat.com) always ended with `Failed to load subscriptions. Check your credentials.`, even after the trial was registered.
+
+**How I found it:** The gateway's `api` container log only showed health pings, so the lookup wasn't there (I didn't find the Controller-side log line). The Customer Portal's Subscriptions page first said "Some of your subscription data is unavailable at this time" (a Red Hat backend delay), then loaded and showed the trial: `60 Day Product Trial of Red Hat Ansible Automation Platform, Self-Supported (100 Managed Nodes)`, subscription 27048734, start 2026-10-16, end 2026-12-14. So the trial existed; my best guess for the failure is that the service account lacked permission to read subscriptions (not confirmed).
+
+**What fixed it:** Used the **Subscription manifest** method. Customer Portal > Subscriptions > Subscription Allocations > Create New subscription allocation (`aap-sandbox`, type Satellite 6.19) > Subscriptions tab > Add Subscriptions (the AAP trial, 100 entitlements) > Export Manifest (a `.zip`, not unzipped) > upload it in the AAP wizard > EULA > Review. AAP then showed the Overview page with Automation Execution (Automation Controller), Automation Analytics, Access Management, Settings, 1 project (Demo Project) and 0 inventories. A CSV export from the Subscriptions page is not a manifest and can't be used. "Ready to buy" on the My trials page starts a purchase: don't click it.
+
+**What I'd do differently:** Go straight to the manifest method. Don't paste manifests or credentials anywhere public. Delete the unused service account `muksyed-aap-svc` on Red Hat's site.
+
+**Trial dates:** the 60-day AAP trial ends 2026-12-14 (the Add Subscriptions page showed 2026-12-15; probably a time zone difference). Calendar reminder: Dec 13. The OpenShift Developer Sandbox ends around Nov 15 (reminder Nov 14).
+
 **Next for AAP**
-1. Finish the subscription wizard.
+1. (done) Finish the subscription wizard.
 2. Create a small playbook repo on GitHub (e.g. `aap-practice`): `hello.yml`, optional `inventory/hosts.yml` with `localhost` and `ansible_connection: local`.
 3. In AAP: Organization/Team, Project from the repo, Inventory, Job Template, Workflow, Schedule, Survey, RBAC for a team.
 4. Gaps for the role: a custom Python module/plugin, an `ansible-lint` GitHub Actions workflow, a dynamic inventory (`aws_ec2`) in the Switchyard repo.
